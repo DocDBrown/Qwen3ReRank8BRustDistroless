@@ -1,0 +1,19 @@
+services:
+  qwen-rerank:
+    image: qwen-rerank
+    platform: linux/amd64  # <--- ADD THIS LINE
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8982:8982"
+    environment:
+      PORT: "8982"
+      RUST_LOG: "info,qwen_rerank=debug"
+      # Ensure the path matches where the Dockerfile puts it (/app/onnx)
+      RERANKER_MODEL_PATH: "/app/onnx/model.onnx"
+      RERANKER_TOKENIZER_PATH: "/app/onnx/tokenizer.json"
+    init: true
+    restart: unless-stopped
+    # Increase shared memory for ONNX Runtime (optional but recommended for large models)
+    shm_size: '2gb'

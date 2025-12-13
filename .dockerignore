@@ -1,0 +1,11 @@
+# .dockerignore
+.git
+*.pyc
+__pycache__
+target
+Cargo.lock
+venv
+*.md
+*.DS_Store
+*.log
+*.tmp
