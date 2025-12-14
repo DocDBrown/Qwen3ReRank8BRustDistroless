@@ -51,20 +51,20 @@ pub(crate) async fn get_test_state() -> AppState {
                 tokenizers::AddedToken::from("<|endoftext|>", true),
             ]);
 
-           AppState {
+            AppState {
                 tokenizer: Arc::new(tokenizer),
                 reranker: Arc::new(MockReranker), // Use Mock
                 model_name: "Test-Model".to_string(),
                 max_length: 128,
             }
         })
-        .clone()  
+        .clone()
 }
 
 #[tokio::test]
 async fn test_rerank_happy_path_sorting_correctness() {
     let state = get_test_state().await;
-    
+
     let req = RerankRequest {
         query: "test".to_string(),
         documents: vec![
@@ -82,7 +82,7 @@ async fn test_rerank_happy_path_sorting_correctness() {
     assert_eq!(response.data[0].index, 0);
     assert_eq!(response.data[1].index, 1);
     assert_eq!(response.data[2].index, 2);
-    
+
     // Verify scores are descending
     for i in 0..response.data.len() - 1 {
         assert!(response.data[i].score >= response.data[i + 1].score);
@@ -120,7 +120,7 @@ async fn test_rerank_handles_top_n_larger_than_batch_size() {
 #[tokio::test]
 async fn test_rerank_respects_return_documents_boolean() {
     let state = get_test_state().await;
-    
+
     let req_false = RerankRequest {
         query: "q".into(),
         documents: vec!["d1".into()],
@@ -155,7 +155,7 @@ async fn test_inference_calculates_sigmoid_correctly() {
 
     let response = handle_rerank(State(state), Json(req)).await.unwrap().0;
     let score = response.data[0].score;
-    
+
     // Mock returns 10.0. Sigmoid(10.0) is very close to 1.0
     assert!(score > 0.99);
     assert!(score <= 1.0);
