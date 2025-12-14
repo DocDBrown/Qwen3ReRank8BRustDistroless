@@ -1,6 +1,6 @@
 use super::*;
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 use axum::http::StatusCode;
 
 async fn get_api_test_state() -> AppState {
@@ -32,7 +32,7 @@ async fn test_rerank_rejects_empty_document_list() {
 async fn test_tokenization_truncates_inputs_exceeding_max_length() {
     let state = get_api_test_state().await;
     // Create a long document. The dummy tokenizer splits by space.
-    let long_doc = "word ".repeat(200); 
+    let long_doc = "word ".repeat(200);
     
     let req = RerankRequest {
         query: "test".into(),
@@ -50,10 +50,7 @@ async fn test_tokenization_pads_batch_to_longest_sequence() {
     let state = get_api_test_state().await;
     let req = RerankRequest {
         query: "test".into(),
-        documents: vec![
-            "short".into(),
-            "this is a much longer document".into()
-        ],
+        documents: vec!["short".into(), "this is a much longer document".into()],
         top_n: None,
         return_documents: None,
     };
@@ -68,11 +65,7 @@ async fn test_tokenization_handles_unicode_and_special_characters() {
     let state = get_api_test_state().await;
     let req = RerankRequest {
         query: "Hello".into(),
-        documents: vec![
-            "Hello world".into(),
-            "你好".into(), 
-            "😊".into(),
-        ],
+        documents: vec!["Hello world".into(), "你好".into(), "😊".into()],
         top_n: None,
         return_documents: None,
     };
