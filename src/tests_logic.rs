@@ -139,10 +139,7 @@ async fn test_rerank_respects_return_documents_boolean() {
         top_n: None,
         return_documents: Some(true),
     };
-    let res_false = handle_rerank(State(state.clone()), Json(req_false))
-        .await
-        .unwrap()
-        .0;
+    let res_true = handle_rerank(State(state), Json(req_true)).await.unwrap().0;
     assert_eq!(res_true.data[0].document.as_deref(), Some("d1"));
 }
 
