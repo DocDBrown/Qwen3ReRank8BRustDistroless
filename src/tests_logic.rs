@@ -1,6 +1,6 @@
 use super::*;
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 use std::sync::OnceLock;
 use tokenizers::models::wordlevel::WordLevel;
 
@@ -18,9 +18,7 @@ impl Reranker for MockReranker {
         // Return deterministic logits for testing sorting.
         // We return decreasing values: 10.0, 9.0, 8.0...
         // This ensures that index 0 has the highest score, index 1 the second, etc.
-        let logits: Vec<f32> = (0..batch_size)
-            .map(|i| 10.0 - (i as f32))
-            .collect();
+        let logits: Vec<f32> = (0..batch_size).map(|i| 10.0 - (i as f32)).collect();
         Ok(logits)
     }
 }
@@ -28,37 +26,39 @@ impl Reranker for MockReranker {
 // Helper to create a safe test state without loading ONNX libs or files
 pub(crate) async fn get_test_state() -> AppState {
     static STATE: OnceLock<AppState> = OnceLock::new();
-    
-    STATE.get_or_init(|| {
-        // Create a dummy tokenizer in memory (no file I/O)
-        // We need a vocabulary that includes the UNK token and the PAD token.
-        let mut vocab = std::collections::HashMap::new();
-        vocab.insert("[UNK]".to_string(), 0);
-        vocab.insert("<|endoftext|>".to_string(), 1);
-        
-        // Initialize WordLevel model with the vocab and UNK token
-        let model = WordLevel::builder()
-            .vocab(vocab)
-            .unk_token("[UNK]".to_string())
-            .build()
-            .expect("Failed to build WordLevel model");
 
-        let mut tokenizer = Tokenizer::new(model);
-        
-        // Register special tokens so they are handled correctly
-        // This ensures <|endoftext|> is treated as a single token and not split
-        tokenizer.add_special_tokens(&[
-            tokenizers::AddedToken::from("[UNK]", true),
-            tokenizers::AddedToken::from("<|endoftext|>", true)
-        ]);
-        
-        AppState {
-            tokenizer: Arc::new(tokenizer),
-            reranker: Arc::new(MockReranker), // Use Mock
-            model_name: "Test-Model".to_string(),
-            max_length: 128,
-        }
-    }).clone()
+    STATE
+        .get_or_init(|| {
+            // Create a dummy tokenizer in memory (no file I/O)
+            // We need a vocabulary that includes the UNK token and the PAD token.
+            let mut vocab = std::collections::HashMap::new();
+            vocab.insert("[UNK]".to_string(), 0);
+            vocab.insert("<|endoftext|>".to_string(), 1);
+
+            // Initialize WordLevel model with the vocab and UNK token
+            let model = WordLevel::builder()
+                .vocab(vocab)
+                .unk_token("[UNK]".to_string())
+                .build()
+                .expect("Failed to build WordLevel model");
+
+            let mut tokenizer = Tokenizer::new(model);
+
+            // Register special tokens so they are handled correctly
+            // This ensures <|endoftext|> is treated as a single token and not split
+            tokenizer.add_special_tokens(&[
+                tokenizers::AddedToken::from("[UNK]", true),
+                tokenizers::AddedToken::from("<|endoftext|>", true),
+            ]);
+
+           AppState {
+                tokenizer: Arc::new(tokenizer),
+                reranker: Arc::new(MockReranker), // Use Mock
+                model_name: "Test-Model".to_string(),
+                max_length: 128,
+            }
+        })
+        .clone()  
 }
 
 #[tokio::test]
@@ -136,7 +136,10 @@ async fn test_rerank_respects_return_documents_boolean() {
         top_n: None,
         return_documents: Some(true),
     };
-    let res_true = handle_rerank(State(state), Json(req_true)).await.unwrap().0;
+    let res_false = handle_rerank(State(state.clone()), Json(req_false))
+        .await
+        .unwrap()
+        .0;
     assert_eq!(res_true.data[0].document.as_deref(), Some("d1"));
 }
 
