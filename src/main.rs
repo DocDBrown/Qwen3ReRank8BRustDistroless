@@ -1,7 +1,7 @@
-use anyhow::{anyhow, Context, Result};
-use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
+use anyhow::{Context, Result, anyhow};
+use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
 use ort::{
-    session::{builder::GraphOptimizationLevel, Session},
+    session::{Session, builder::GraphOptimizationLevel},
     value::Tensor,
 };
 use serde::{Deserialize, Serialize};
@@ -14,7 +14,6 @@ use tracing_subscriber::EnvFilter;
 
 #[cfg(test)]
 mod tests_logic;
-#[cfg(test)]
 mod tests_api;
 
 // --- 1. Abstraction Layer ---
@@ -24,7 +23,7 @@ mod tests_api;
 pub trait Reranker: Send + Sync {
     fn compute_logits(
         &self,
-        input_ids: Vec<i64>,      // Changed: Takes ownership (Vec) instead of slice
+        input_ids: Vec<i64>, // Changed: Takes ownership (Vec) instead of slice
         attention_mask: Vec<i64>, // Changed: Takes ownership (Vec) instead of slice
         shape: [usize; 2],
     ) -> Result<Vec<f32>>;
@@ -55,18 +54,26 @@ impl Reranker for OrtReranker {
         inputs.insert("attention_mask".to_string(), attention_mask_tensor);
 
         // Run Inference
-        let mut session = self.session.blocking_lock(); 
-        let outputs = session.run(inputs).map_err(|e| anyhow!("inference failed: {e}"))?;
+        let mut session = self.session.blocking_lock();
+        let outputs = session
+            .run(inputs)
+            .map_err(|e| anyhow!("inference failed: {e}"))?;
 
         // Extract Logits
         let output_tensor = if let Some(v) = outputs.get("logits") {
             v
         } else {
-            let first_key = outputs.keys().next().ok_or_else(|| anyhow!("Model produced no outputs"))?;
-            outputs.get(first_key).ok_or_else(|| anyhow!("Failed to retrieve first output"))?
+            let first_key = outputs
+                .keys()
+                .next()
+                .ok_or_else(|| anyhow!("Model produced no outputs"))?;
+            outputs
+                .get(first_key)
+                .ok_or_else(|| anyhow!("Failed to retrieve first output"))?
         };
-
-        let scores_raw = output_tensor.try_extract_tensor::<f32>()
+        
+        let scores_raw = output_tensor
+            .try_extract_tensor::<f32>()
             .map_err(|_| anyhow!("Output is not f32"))?;
 
         // Copy data to Vec<f32> to return owned data
@@ -124,7 +131,8 @@ async fn main() -> Result<()> {
         std::env::var("RERANKER_MODEL_PATH").unwrap_or_else(|_| "onnx/model.onnx".to_string()), 
     );
     let tokenizer_path = PathBuf::from(
-        std::env::var("RERANKER_TOKENIZER_PATH").unwrap_or_else(|_| "onnx/tokenizer.json".to_string()),
+        std::env::var("RERANKER_TOKENIZER_PATH")
+            .unwrap_or_else(|_| "onnx/tokenizer.json".to_string()),
     );
 
     // Load Tokenizer
@@ -166,7 +174,9 @@ async fn main() -> Result<()> {
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
-    let port: u16 = std::env::var("PORT").unwrap_or("8982".to_string()).parse()?;
+    let port: u16 = std::env::var("PORT")
+        .unwrap_or("8982".to_string())
+        .parse()?;
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     info!("listening on http://{addr}");
     axum::serve(tokio::net::TcpListener::bind(addr).await?, app).await?;
@@ -180,28 +190,40 @@ async fn handle_rerank(
     Json(req): Json<RerankRequest>,
 ) -> Result<Json<RerankResponse>, (StatusCode, String)> {
     if req.documents.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "documents must be non-empty".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "documents must be non-empty".to_string(),
+        ));
     }
 
     // 1. Tokenize
     let mut encodings = Vec::with_capacity(req.documents.len());
     for doc in &req.documents {
-        let encoding = state.tokenizer.encode(
-            (req.query.as_str(), doc.as_str()), 
-            true 
-        ).map_err(internal_err)?;
-        encodings.push(encoding);
+        let encoding = state
+            .tokenizer
+            .encode((req.query.as_str(), doc.as_str()), true)
+            .map_err(internal_err)?;
+         encodings.push(encoding);
     }
 
     // 2. Batching
     let batch_size = encodings.len();
-    let max_len_in_batch = encodings.iter().map(|e| e.get_ids().len()).max().unwrap_or(0);
+    let max_len_in_batch = encodings
+        .iter()
+        .map(|e| e.get_ids().len())
+        .max()
+        .unwrap_or(0);
     let max_len = std::cmp::min(max_len_in_batch, state.max_length);
 
     let mut input_ids = vec![0i64; batch_size * max_len];
     let mut attention_mask = vec![0i64; batch_size * max_len];
 
-    let pad_id = state.tokenizer.get_vocab(true).get("<|endoftext|>").copied().unwrap_or(0) as i64;
+    let pad_id = state
+        .tokenizer
+        .get_vocab(true)
+        .get("<|endoftext|>")
+        .copied()
+        .unwrap_or(0) as i64;
 
     for (i, encoding) in encodings.iter().enumerate() {
         let ids = encoding.get_ids();
