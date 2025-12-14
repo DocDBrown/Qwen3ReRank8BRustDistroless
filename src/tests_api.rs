@@ -33,7 +33,7 @@ async fn test_tokenization_truncates_inputs_exceeding_max_length() {
     let state = get_api_test_state().await;
     // Create a long document. The dummy tokenizer splits by space.
     let long_doc = "word ".repeat(200);
-    
+
     let req = RerankRequest {
         query: "test".into(),
         documents: vec![long_doc],
