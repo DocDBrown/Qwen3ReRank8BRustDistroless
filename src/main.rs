@@ -14,6 +14,8 @@ use tracing_subscriber::EnvFilter;
 
 #[cfg(test)]
 mod tests_logic;
+
+#[cfg(test)]
 mod tests_api;
 
 // --- 1. Abstraction Layer ---
@@ -71,7 +73,7 @@ impl Reranker for OrtReranker {
                 .get(first_key)
                 .ok_or_else(|| anyhow!("Failed to retrieve first output"))?
         };
-        
+
         let scores_raw = output_tensor
             .try_extract_tensor::<f32>()
             .map_err(|_| anyhow!("Output is not f32"))?;
@@ -128,7 +130,7 @@ async fn main() -> Result<()> {
         .init();
 
     let model_path = PathBuf::from(
-        std::env::var("RERANKER_MODEL_PATH").unwrap_or_else(|_| "onnx/model.onnx".to_string()), 
+        std::env::var("RERANKER_MODEL_PATH").unwrap_or_else(|_| "onnx/model.onnx".to_string()),
     );
     let tokenizer_path = PathBuf::from(
         std::env::var("RERANKER_TOKENIZER_PATH")
@@ -203,7 +205,7 @@ async fn handle_rerank(
             .tokenizer
             .encode((req.query.as_str(), doc.as_str()), true)
             .map_err(internal_err)?;
-         encodings.push(encoding);
+        encodings.push(encoding);
     }
 
     // 2. Batching
@@ -228,7 +230,7 @@ async fn handle_rerank(
     for (i, encoding) in encodings.iter().enumerate() {
         let ids = encoding.get_ids();
         let len = std::cmp::min(ids.len(), max_len);
-        
+
         for j in 0..len {
             input_ids[i * max_len + j] = ids[j] as i64;
             attention_mask[i * max_len + j] = 1;
@@ -242,16 +244,20 @@ async fn handle_rerank(
     // 3. Inference (via Trait)
     let shape = [batch_size, max_len];
     // Pass by value (move) to satisfy OwnedTensorArrayData
-    let logits = state.reranker.compute_logits(input_ids, attention_mask, shape)
+    let logits = state
+        .reranker
+        .compute_logits(input_ids, attention_mask, shape)
         .map_err(internal_err)?;
 
     // 4. Post-processing (Sigmoid + Sort)
     let mut results = Vec::new();
     for (i, &logit) in logits.iter().enumerate() {
-        if i >= batch_size { break; }
-        
+        if i >= batch_size {
+            break;
+        }
+
         let score = 1.0 / (1.0 + (-logit).exp());
-        
+
         results.push(RerankResult {
             index: i,
             score,
@@ -263,8 +269,12 @@ async fn handle_rerank(
         });
     }
 
-    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-    
+        results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
     if let Some(n) = req.top_n {
         results.truncate(n);
     }
