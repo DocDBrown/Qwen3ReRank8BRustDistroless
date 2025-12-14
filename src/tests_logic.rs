@@ -127,7 +127,10 @@ async fn test_rerank_respects_return_documents_boolean() {
         top_n: None,
         return_documents: Some(false),
     };
-    let res_false = handle_rerank(State(state.clone()), Json(req_false)).await.unwrap().0;
+    let res_false = handle_rerank(State(state.clone()), Json(req_false))
+        .await
+        .unwrap()
+        .0;
     assert!(res_false.data[0].document.is_none());
 
     let req_true = RerankRequest {
