@@ -5,33 +5,25 @@ use ort::{
     value::Tensor,
 };
 use serde::{Deserialize, Serialize};
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    net::SocketAddr,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 use tokenizers::Tokenizer;
-use tokio::sync::Mutex;
 use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
-#[cfg(test)]
-mod tests_logic;
-
-#[cfg(test)]
-mod tests_api;
-
-// --- 1. Abstraction Layer ---
-
-/// Trait to abstract the inference engine.
-/// This allows us to mock the model in tests without loading libonnxruntime.
 pub trait Reranker: Send + Sync {
     fn compute_logits(
         &self,
-        input_ids: Vec<i64>, // Changed: Takes ownership (Vec) instead of slice
-        attention_mask: Vec<i64>, // Changed: Takes ownership (Vec) instead of slice
+        input_ids: Vec<i64>,
+        attention_mask: Vec<i64>,
         shape: [usize; 2],
     ) -> Result<Vec<f32>>;
 }
 
-/// Concrete implementation using ORT (ONNX Runtime)
 struct OrtReranker {
     session: Mutex<Session>,
 }
@@ -43,7 +35,6 @@ impl Reranker for OrtReranker {
         attention_mask: Vec<i64>,
         shape: [usize; 2],
     ) -> Result<Vec<f32>> {
-        // Tensor::from_array consumes the Vec, satisfying OwnedTensorArrayData
         let input_ids_tensor = Tensor::from_array((shape, input_ids))
             .map_err(|e| anyhow!("failed to create input_ids tensor: {e}"))?
             .into_dyn();
@@ -55,13 +46,15 @@ impl Reranker for OrtReranker {
         inputs.insert("input_ids".to_string(), input_ids_tensor);
         inputs.insert("attention_mask".to_string(), attention_mask_tensor);
 
-        // Run Inference
-        let mut session = self.session.blocking_lock();
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| anyhow!("failed to acquire session lock"))?;
+
         let outputs = session
             .run(inputs)
             .map_err(|e| anyhow!("inference failed: {e}"))?;
 
-        // Extract Logits
         let output_tensor = if let Some(v) = outputs.get("logits") {
             v
         } else {
@@ -78,17 +71,13 @@ impl Reranker for OrtReranker {
             .try_extract_tensor::<f32>()
             .map_err(|_| anyhow!("Output is not f32"))?;
 
-        // Copy data to Vec<f32> to return owned data
         Ok(scores_raw.1.to_vec())
     }
 }
 
-// --- 2. Application State ---
-
 #[derive(Clone)]
 struct AppState {
     tokenizer: Arc<Tokenizer>,
-    // Use the trait object instead of concrete Session
     reranker: Arc<dyn Reranker>,
     model_name: String,
     max_length: usize,
@@ -119,8 +108,6 @@ struct RerankResponse {
     data: Vec<RerankResult>,
 }
 
-// --- 3. Main Entry Point ---
-
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -137,18 +124,26 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|_| "onnx/tokenizer.json".to_string()),
     );
 
-    // Load Tokenizer
     let tokenizer = Tokenizer::from_file(&tokenizer_path)
         .map_err(|e| anyhow!("failed to load tokenizer: {e}"))
         .with_context(|| format!("path: {tokenizer_path:?}"))?;
     let tokenizer = Arc::new(tokenizer);
 
-    // Init ORT
-    ort::init()
-        .commit()
-        .map_err(|e| anyhow!("failed to init ORT: {e}"))?;
+    #[cfg(feature = "load-dynamic")]
+    {
+        let dylib_path = std::env::var("ORT_DYLIB_PATH")
+            .unwrap_or_else(|_| "/opt/onnxruntime/lib/libonnxruntime.so".to_string());
+        ort::init_from(dylib_path)
+            .commit()
+            .map_err(|e| anyhow!("failed to init ORT: {e}"))?;
+    }
+    #[cfg(not(feature = "load-dynamic"))]
+    {
+        ort::init()
+            .commit()
+            .map_err(|e| anyhow!("failed to init ORT: {e}"))?;
+    }
 
-    // Load Session
     let session = Session::builder()?
         .with_optimization_level(GraphOptimizationLevel::Level3)?
         .with_intra_threads(4)?
@@ -157,7 +152,6 @@ async fn main() -> Result<()> {
 
     info!("Model loaded successfully");
 
-    // Wrap session in our trait implementation
     let reranker = Arc::new(OrtReranker {
         session: Mutex::new(session),
     });
@@ -177,15 +171,13 @@ async fn main() -> Result<()> {
         .with_state(state);
 
     let port: u16 = std::env::var("PORT")
-        .unwrap_or("8982".to_string())
+        .unwrap_or_else(|_| "8982".to_string())
         .parse()?;
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     info!("listening on http://{addr}");
     axum::serve(tokio::net::TcpListener::bind(addr).await?, app).await?;
     Ok(())
 }
-
-// --- 4. Handler ---
 
 async fn handle_rerank(
     State(state): State<AppState>,
@@ -198,17 +190,17 @@ async fn handle_rerank(
         ));
     }
 
-    // 1. Tokenize
     let mut encodings = Vec::with_capacity(req.documents.len());
     for doc in &req.documents {
+        let input_text = format!("Query: {}\nDocument: {}", req.query, doc);
+
         let encoding = state
             .tokenizer
-            .encode((req.query.as_str(), doc.as_str()), true)
+            .encode(input_text, true)
             .map_err(internal_err)?;
         encodings.push(encoding);
     }
 
-    // 2. Batching
     let batch_size = encodings.len();
     let max_len_in_batch = encodings
         .iter()
@@ -241,23 +233,21 @@ async fn handle_rerank(
         }
     }
 
-    // 3. Inference (via Trait)
     let shape = [batch_size, max_len];
-    // Pass by value (move) to satisfy OwnedTensorArrayData
-    let logits = state
-        .reranker
-        .compute_logits(input_ids, attention_mask, shape)
-        .map_err(internal_err)?;
+    let reranker = state.reranker.clone();
+    let logits = tokio::task::spawn_blocking(move || {
+        reranker.compute_logits(input_ids, attention_mask, shape)
+    })
+    .await
+    .map_err(|e| internal_err(format!("Task join error: {e}")))?
+    .map_err(internal_err)?;
 
-    // 4. Post-processing (Sigmoid + Sort)
     let mut results = Vec::new();
     for (i, &logit) in logits.iter().enumerate() {
         if i >= batch_size {
             break;
         }
-
         let score = 1.0 / (1.0 + (-logit).exp());
-
         results.push(RerankResult {
             index: i,
             score,
@@ -290,3 +280,8 @@ fn internal_err<E: std::fmt::Display>(e: E) -> (StatusCode, String) {
     error!("internal error: {e}");
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }
+
+#[cfg(test)]
+mod tests_api;
+#[cfg(test)]
+mod tests_logic;
