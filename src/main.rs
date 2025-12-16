@@ -322,7 +322,6 @@ mod tests_api;
 #[cfg(test)]
 mod tests_logic;
 
-
 #[cfg(test)]
 mod tests_api;
 #[cfg(test)]
