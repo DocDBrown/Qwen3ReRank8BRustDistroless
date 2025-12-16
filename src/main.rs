@@ -16,12 +16,13 @@ use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 pub trait Reranker: Send + Sync {
+    // Returns Vec<Vec<f32>> to handle [Batch, Num_Classes]
     fn compute_logits(
         &self,
         input_ids: Vec<i64>,
         attention_mask: Vec<i64>,
         shape: [usize; 2],
-    ) -> Result<Vec<f32>>;
+    ) -> Result<Vec<Vec<f32>>>;
 }
 
 struct OrtReranker {
@@ -34,7 +35,7 @@ impl Reranker for OrtReranker {
         input_ids: Vec<i64>,
         attention_mask: Vec<i64>,
         shape: [usize; 2],
-    ) -> Result<Vec<f32>> {
+    ) -> Result<Vec<Vec<f32>>> {
         let input_ids_tensor = Tensor::from_array((shape, input_ids))
             .map_err(|e| anyhow!("failed to create input_ids tensor: {e}"))?
             .into_dyn();
@@ -67,11 +68,33 @@ impl Reranker for OrtReranker {
                 .ok_or_else(|| anyhow!("Failed to retrieve first output"))?
         };
 
+        let output_shape = output_tensor.shape();
         let scores_raw = output_tensor
             .try_extract_tensor::<f32>()
             .map_err(|_| anyhow!("Output is not f32"))?;
+        let flat_scores = scores_raw.1;
 
-        Ok(scores_raw.1.to_vec())
+        let batch_size = shape[0];
+        let mut batch_logits = Vec::with_capacity(batch_size);
+
+        if output_shape.len() == 2 {
+            let num_classes = output_shape[1] as usize;
+            for i in 0..batch_size {
+                let start = i * num_classes;
+                let end = start + num_classes;
+                if end <= flat_scores.len() {
+                    batch_logits.push(flat_scores[start..end].to_vec());
+                }
+            }
+        } else if output_shape.len() == 1 {
+            for &score in flat_scores {
+                batch_logits.push(vec![score]);
+            }
+        } else {
+            return Err(anyhow!("Unexpected output shape: {:?}", output_shape));
+        }
+
+        Ok(batch_logits)
     }
 }
 
@@ -193,7 +216,6 @@ async fn handle_rerank(
     let mut encodings = Vec::with_capacity(req.documents.len());
     for doc in &req.documents {
         let input_text = format!("Query: {}\nDocument: {}", req.query, doc);
-
         let encoding = state
             .tokenizer
             .encode(input_text, true)
@@ -214,9 +236,8 @@ async fn handle_rerank(
 
     let pad_id = state
         .tokenizer
-        .get_vocab(true)
-        .get("<|endoftext|>")
-        .copied()
+        .token_to_id("<|endoftext|>")
+        .or_else(|| state.tokenizer.token_to_id("<|im_end|>"))
         .unwrap_or(0) as i64;
 
     for (i, encoding) in encodings.iter().enumerate() {
@@ -235,7 +256,8 @@ async fn handle_rerank(
 
     let shape = [batch_size, max_len];
     let reranker = state.reranker.clone();
-    let logits = tokio::task::spawn_blocking(move || {
+
+    let all_logits = tokio::task::spawn_blocking(move || {
         reranker.compute_logits(input_ids, attention_mask, shape)
     })
     .await
@@ -243,11 +265,25 @@ async fn handle_rerank(
     .map_err(internal_err)?;
 
     let mut results = Vec::new();
-    for (i, &logit) in logits.iter().enumerate() {
+    for (i, logits) in all_logits.iter().enumerate() {
         if i >= batch_size {
             break;
         }
-        let score = 1.0 / (1.0 + (-logit).exp());
+
+        info!("Doc {}: Raw Logits: {:?}", i, logits);
+
+        let score = if logits.len() == 1 {
+            1.0 / (1.0 + (-logits[0]).exp())
+        } else if logits.len() == 2 {
+            // FIX: Switched to Index 0 based on your logs.
+            // Index 1 was "Irrelevant" (Canberra had lowest score).
+            // Index 0 is "Relevant".
+            let relevant_logit = logits[0];
+            1.0 / (1.0 + (-relevant_logit).exp())
+        } else {
+            0.0
+        };
+
         results.push(RerankResult {
             index: i,
             score,
@@ -280,6 +316,12 @@ fn internal_err<E: std::fmt::Display>(e: E) -> (StatusCode, String) {
     error!("internal error: {e}");
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }
+
+#[cfg(test)]
+mod tests_api;
+#[cfg(test)]
+mod tests_logic;
+
 
 #[cfg(test)]
 mod tests_api;
