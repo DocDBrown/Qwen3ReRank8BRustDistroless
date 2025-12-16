@@ -321,8 +321,3 @@ fn internal_err<E: std::fmt::Display>(e: E) -> (StatusCode, String) {
 mod tests_api;
 #[cfg(test)]
 mod tests_logic;
-
-#[cfg(test)]
-mod tests_api;
-#[cfg(test)]
-mod tests_logic;
