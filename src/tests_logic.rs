@@ -55,4 +55,3 @@ pub(crate) async fn get_test_state() -> AppState {
         })
         .clone()
 }
-
